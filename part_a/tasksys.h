@@ -2,9 +2,11 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <memory>
 #include <queue>
 #include <thread>
 
@@ -59,6 +61,15 @@ public:
   void sync();
 
 private:
+  struct TaskGroup {
+    int remain_tasks; // current task group remain tasks
+    int num_total_tasks;  // current task group total tasks
+    IRunnable* runnable;
+    std::condition_variable completed_cv;
+    std::mutex completed_mutex;
+  };
+
+private:
   template <typename Func, typename... Args>
   auto enqueue(Func &&func, Args &&...args)
       -> std::future<std::invoke_result_t<Func, Args...>> {
@@ -84,6 +95,8 @@ private:
     task_queue_cv_.notify_one();
     return result;
   }
+
+  void submitTaskGroupTasks(std::unique_ptr<TaskGroup>& task_group);
 
 private:
   std::vector<std::thread> thread_pool_;

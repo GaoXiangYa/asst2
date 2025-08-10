@@ -1,11 +1,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <math.h>
 #include <set>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
+#include <iostream>
 
 #include "CycleTimer.h"
 #include "itasksys.h"
@@ -195,6 +197,8 @@ public:
     int start_el = elements_per_task * task_id;
     int end_el = std::min(start_el + elements_per_task, num_elements_);
 
+    if (std::getenv("DEBUG_SPIN"))
+        printf("task_id = %d execute [%d, %d]\n", task_id, start_el, end_el);
     if (equal_work_) {
       for (int i = start_el; i < end_el; i++)
         output_array_[i] = ping_pong_work(iters_, input_array_[i]);
@@ -568,7 +572,7 @@ TestResults simpleTestAsync(ITaskSystem *t) { return simpleTest(t, true); }
  * `base_iters`, because each task gets `num_elements` / `num_tasks` elements
  * and does O(base_iters) work per element.
  */
-TestResults pingPongTest(ITaskSystem *t, bool equal_work, bool do_async,
+inline TestResults pingPongTest(ITaskSystem *t, bool equal_work, bool do_async,
                          int num_elements, int base_iters) {
 
   int num_tasks = 64;

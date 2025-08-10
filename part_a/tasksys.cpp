@@ -1,4 +1,7 @@
 #include "tasksys.h"
+#include "itasksys.h"
+#include <memory>
+#include <mutex>
 
 IRunnable::~IRunnable() {}
 
@@ -122,6 +125,24 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(
   }
 }
 
+void TaskSystemParallelThreadPoolSpinning::submitTaskGroupTasks(
+    std::unique_ptr<TaskGroup> &task_group) {
+  auto func = [&task_group](int task_id) {
+    task_group->runnable->runTask(task_id, task_group->num_total_tasks);
+
+    task_group->remain_tasks--;
+    if (task_group->remain_tasks == 0) {
+      {
+        std::unique_lock<std::mutex> lock(task_group->completed_mutex);
+        task_group->completed_cv.notify_all();
+      }
+    }
+  };
+  for (int i = 0; i < task_group->num_total_tasks; ++i) {
+    this->enqueue(func, i);
+  }
+}
+
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
   {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -141,11 +162,13 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable *runnable,
   // method in Part A.  The implementation provided below runs all
   // tasks sequentially on the calling thread.
   //
-  auto task = [](IRunnable *runnable, int task_id, int num_total_tasks) {
-    runnable->runTask(task_id, num_total_tasks);
-  };
-  for (int i = 0; i < num_total_tasks; i++) {
-    this->enqueue(task, runnable, i, num_total_tasks);
+  auto task_group =
+      std::make_unique<TaskGroup>(num_total_tasks, num_total_tasks, runnable);
+  submitTaskGroupTasks(task_group);
+  {
+    std::unique_lock<std::mutex> lock(task_group->completed_mutex);
+    task_group->completed_cv.wait(
+        lock, [&task_group] { return task_group->remain_tasks == 0; });
   }
 }
 
