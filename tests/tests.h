@@ -197,8 +197,6 @@ public:
     int start_el = elements_per_task * task_id;
     int end_el = std::min(start_el + elements_per_task, num_elements_);
 
-    if (std::getenv("DEBUG_SPIN"))
-        printf("task_id = %d execute [%d, %d]\n", task_id, start_el, end_el);
     if (equal_work_) {
       for (int i = start_el; i < end_el; i++)
         output_array_[i] = ping_pong_work(iters_, input_array_[i]);
