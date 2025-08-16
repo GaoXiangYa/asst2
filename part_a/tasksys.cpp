@@ -1,5 +1,7 @@
 #include "tasksys.h"
 #include "itasksys.h"
+#include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 
@@ -126,15 +128,16 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(
 }
 
 void TaskSystemParallelThreadPoolSpinning::submitTaskGroupTasks(
-    std::unique_ptr<TaskGroup> &task_group) {
-  auto func = [&task_group](int task_id) {
+    std::shared_ptr<TaskGroup> &task_group) {
+  auto func = [task_group](int task_id) {
     task_group->runnable->runTask(task_id, task_group->num_total_tasks);
 
-    task_group->remain_tasks--;
-    if (task_group->remain_tasks == 0) {
+    // fetch_sub return old value
+    int remain_task = task_group->remain_tasks.fetch_sub(1);
+    if (remain_task == 1) {
       {
         std::unique_lock<std::mutex> lock(task_group->completed_mutex);
-        task_group->completed_cv.notify_all();
+        task_group->completed_cv.notify_one();
       }
     }
   };
@@ -163,7 +166,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable *runnable,
   // tasks sequentially on the calling thread.
   //
   auto task_group =
-      std::make_unique<TaskGroup>(num_total_tasks, num_total_tasks, runnable);
+      std::make_shared<TaskGroup>(num_total_tasks, num_total_tasks, runnable);
   submitTaskGroupTasks(task_group);
   {
     std::unique_lock<std::mutex> lock(task_group->completed_mutex);

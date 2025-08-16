@@ -62,7 +62,7 @@ public:
 
 private:
   struct TaskGroup {
-    int remain_tasks; // current task group remain tasks
+    std::atomic<int> remain_tasks; // current task group remain tasks
     int num_total_tasks;  // current task group total tasks
     IRunnable* runnable;
     std::condition_variable completed_cv;
@@ -96,7 +96,7 @@ private:
     return result;
   }
 
-  void submitTaskGroupTasks(std::unique_ptr<TaskGroup>& task_group);
+  void submitTaskGroupTasks(std::shared_ptr<TaskGroup>& task_group);
 
 private:
   std::vector<std::thread> thread_pool_;
