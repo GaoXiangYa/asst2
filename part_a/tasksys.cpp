@@ -8,6 +8,7 @@
 #include <optional>
 #include <random>
 #include <thread>
+#include <utility>
 
 IRunnable::~IRunnable() {}
 
@@ -210,11 +211,14 @@ void Worker::run() {
   auto func = [this]() {
     while (true) {
       Worker::Task task;
+
       {
         std::unique_lock<std::mutex> lock(this->mutex_);
+
         this->cv.wait(lock, this->thread_pool_->stop_token_, [this] {
           return !this->task_queue.empty() ||
-                 this->thread_pool_->stop_token_.stop_requested();
+                 this->thread_pool_->stop_token_.stop_requested() ||
+                 this->thread_pool_->global_task_count_ > 0;
         });
 
         if (this->thread_pool_->stop_token_.stop_requested() &&
@@ -225,7 +229,7 @@ void Worker::run() {
         if (!this->task_queue.empty()) {
           task = std::move(task_queue.back());
           task_queue.pop_back();
-          this->thread_pool_->global_task_count_.fetch_sub(1);
+          if (task == nullptr) printf("pop task is nullptr\n");
         }
       }
 
@@ -236,7 +240,7 @@ void Worker::run() {
           if (victim && victim != this) {
             if (auto stolen = victim->tryStealTask(); stolen.has_value()) {
               task = std::move(*stolen);
-              this->thread_pool_->global_task_count_.fetch_sub(1);
+              if (task == nullptr) printf("steal task is nullptr\n");
               break;
             }
           }
@@ -244,8 +248,9 @@ void Worker::run() {
       }
 
       if (task != nullptr) {
+        this->thread_pool_->global_task_count_.fetch_sub(1);
         task();
-        
+
         printf("last task = %d\n",
                this->thread_pool_->global_task_count_.load());
         for (const auto &worker : this->thread_pool_->thread_pool_) {
@@ -266,9 +271,7 @@ ThreadPool::ThreadPool(const int num_threads) : num_threads_(num_threads) {
   for (int i = 0; i < num_threads; ++i) {
     thread_pool_.push_back(std::make_unique<Worker>(i, this));
   }
-}
 
-void ThreadPool::execute() {
   for (const auto &worker : thread_pool_) {
     worker->run();
   }
@@ -276,7 +279,7 @@ void ThreadPool::execute() {
 
 Worker *ThreadPool::getVictim() {
   int low = 0;
-  int high = num_threads_;
+  int high = num_threads_ - 1;
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<int> dist(low, high);
@@ -307,7 +310,6 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(
   // Implementations are free to add new class member variables
   // (requiring changes to tasksys.h).
   //
-  thread_pool_.execute();
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -321,11 +323,17 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
 
 void TaskSystemParallelThreadPoolSleeping::submitTaskGroupTasks(
     std::shared_ptr<TaskGroup> &task_group) {
-  auto func = [task_group](int task_id) {
+  auto func = [task_group, this](int task_id) {
     task_group->runnable->runTask(task_id, task_group->num_total_tasks);
+    task_set_.erase(task_set_.find(task_id));
     // fetch_sub return old value
     int remain_task = task_group->remain_tasks.fetch_sub(1);
-    printf("execute task %d\n", task_id);
+    printf("remain_task %d\n", remain_task);
+    // if (remain_task == 2) {
+      // for (auto tid : task_set_) {
+        // printf("last task = %d\n", tid);
+      // }
+    // }
     if (remain_task == 1) {
       {
         std::unique_lock<std::mutex> lock(task_group->completed_mutex);
@@ -334,6 +342,7 @@ void TaskSystemParallelThreadPoolSleeping::submitTaskGroupTasks(
     }
   };
   for (int i = 0; i < task_group->num_total_tasks; ++i) {
+    // task_set_.insert(i);
     thread_pool_.submitTask(func, i);
   }
 }

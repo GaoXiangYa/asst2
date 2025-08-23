@@ -13,6 +13,7 @@
 #include <queue>
 #include <stop_token>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 /*
@@ -168,15 +169,13 @@ public:
     {
       std::unique_lock<std::mutex> lock(mutex_);
       worker_idx_ = (worker_idx_ + 1) % num_threads_;
+      this->global_task_count_.fetch_add(1);
       thread_pool_[worker_idx_]->task_queue.emplace_back([task] { (*task)(); });
       thread_pool_[worker_idx_]->cv.notify_one();
-      this->global_task_count_.fetch_add(1);
     }
 
     return result;
   }
-
-  void execute();
 
   Worker *getVictim();
 
@@ -220,6 +219,7 @@ private:
   ThreadPool thread_pool_;
   std::mutex mutex_;
   int num_threads_;
+  std::unordered_set<int> task_set_;
 };
 
 #endif
