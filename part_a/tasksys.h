@@ -133,6 +133,8 @@ public:
 
   std::optional<Task> tryStealTask();
 
+  void pushTask(Task task);
+
 public:
   std::deque<Task> task_queue;
   std::condition_variable_any cv;
@@ -170,8 +172,8 @@ public:
       std::unique_lock<std::mutex> lock(mutex_);
       worker_idx_ = (worker_idx_ + 1) % num_threads_;
       this->global_task_count_.fetch_add(1);
-      thread_pool_[worker_idx_]->task_queue.emplace_back([task] { (*task)(); });
-      thread_pool_[worker_idx_]->cv.notify_one();
+
+      thread_pool_[worker_idx_]->pushTask(std::move([task]{ (*task)(); }));
     }
 
     return result;

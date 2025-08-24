@@ -207,6 +207,14 @@ std::optional<Worker::Task> Worker::tryStealTask() {
   return task;
 }
 
+void Worker::pushTask(Worker::Task task) {
+  {
+    std::unique_lock<std::mutex> lock(this->mutex_);
+    this->task_queue.push_back(std::move(task));
+  }
+  this->cv.notify_one();
+}
+
 void Worker::run() {
   auto func = [this]() {
     while (true) {
@@ -229,7 +237,6 @@ void Worker::run() {
         if (!this->task_queue.empty()) {
           task = std::move(task_queue.back());
           task_queue.pop_back();
-          if (task == nullptr) printf("pop task is nullptr\n");
         }
       }
 
@@ -240,7 +247,6 @@ void Worker::run() {
           if (victim && victim != this) {
             if (auto stolen = victim->tryStealTask(); stolen.has_value()) {
               task = std::move(*stolen);
-              if (task == nullptr) printf("steal task is nullptr\n");
               break;
             }
           }
@@ -250,13 +256,6 @@ void Worker::run() {
       if (task != nullptr) {
         this->thread_pool_->global_task_count_.fetch_sub(1);
         task();
-
-        printf("last task = %d\n",
-               this->thread_pool_->global_task_count_.load());
-        for (const auto &worker : this->thread_pool_->thread_pool_) {
-          printf("worker: %d task_queue size = %lu\n", worker->worker_id_,
-                 worker->task_queue.size());
-        }
       } else {
         std::this_thread::yield();
       }
@@ -325,15 +324,7 @@ void TaskSystemParallelThreadPoolSleeping::submitTaskGroupTasks(
     std::shared_ptr<TaskGroup> &task_group) {
   auto func = [task_group, this](int task_id) {
     task_group->runnable->runTask(task_id, task_group->num_total_tasks);
-    task_set_.erase(task_set_.find(task_id));
-    // fetch_sub return old value
     int remain_task = task_group->remain_tasks.fetch_sub(1);
-    printf("remain_task %d\n", remain_task);
-    // if (remain_task == 2) {
-      // for (auto tid : task_set_) {
-        // printf("last task = %d\n", tid);
-      // }
-    // }
     if (remain_task == 1) {
       {
         std::unique_lock<std::mutex> lock(task_group->completed_mutex);
@@ -359,7 +350,6 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable *runnable,
   auto task_group =
       std::make_shared<TaskGroup>(num_total_tasks, num_total_tasks, runnable);
 
-  printf("=======================\n");
   submitTaskGroupTasks(task_group);
   {
     std::unique_lock<std::mutex> lock(task_group->completed_mutex);
