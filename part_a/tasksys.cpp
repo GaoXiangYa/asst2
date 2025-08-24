@@ -224,8 +224,7 @@ void Worker::run() {
         std::unique_lock<std::mutex> lock(this->mutex_);
 
         this->cv.wait(lock, this->thread_pool_->stop_token_, [this] {
-          return !this->task_queue.empty() ||
-                 this->thread_pool_->stop_token_.stop_requested() ||
+          return this->thread_pool_->stop_token_.stop_requested() ||
                  this->thread_pool_->global_task_count_ > 0;
         });
 
@@ -254,7 +253,8 @@ void Worker::run() {
       }
 
       if (task != nullptr) {
-        this->thread_pool_->global_task_count_.fetch_sub(1);
+        this->thread_pool_->global_task_count_.fetch_sub(
+            1, std::memory_order_acquire);
         task();
       } else {
         std::this_thread::yield();
@@ -279,8 +279,7 @@ ThreadPool::ThreadPool(const int num_threads) : num_threads_(num_threads) {
 Worker *ThreadPool::getVictim() {
   int low = 0;
   int high = num_threads_ - 1;
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  thread_local std::mt19937 gen(std::random_device{}());
   std::uniform_int_distribution<int> dist(low, high);
 
   int random_num = dist(gen);
@@ -322,9 +321,10 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
 
 void TaskSystemParallelThreadPoolSleeping::submitTaskGroupTasks(
     std::shared_ptr<TaskGroup> &task_group) {
-  auto func = [task_group, this](int task_id) {
+  auto func = [task_group](int task_id) {
     task_group->runnable->runTask(task_id, task_group->num_total_tasks);
-    int remain_task = task_group->remain_tasks.fetch_sub(1);
+    int remain_task =
+        task_group->remain_tasks.fetch_sub(1, std::memory_order_relaxed);
     if (remain_task == 1) {
       {
         std::unique_lock<std::mutex> lock(task_group->completed_mutex);

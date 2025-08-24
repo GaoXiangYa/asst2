@@ -36,12 +36,10 @@ ITaskSystem *selectTaskSystemRefImpl(int num_threads, TaskSystemType type) {
     assert(type < N_TASKSYS_IMPLS);
 
     if (type == SERIAL) {
-        setenv("DEBUG_SERIAL", "true", 1);
         return new TaskSystemSerial(num_threads);
     } else if (type == PARALLEL_SPAWN) {
         return new TaskSystemParallelSpawn(num_threads);
     } else if (type == PARALLEL_THREAD_POOL_SPINNING) {
-        setenv("DEBUG_SPIN", "true", 1);
         return new TaskSystemParallelThreadPoolSpinning(num_threads);
     } else if (type == PARALLEL_THREAD_POOL_SLEEPING) {
         return new TaskSystemParallelThreadPoolSleeping(num_threads);
@@ -167,6 +165,7 @@ int main(int argc, char** argv)
 
         for (int i = 0; i < N_TASKSYS_IMPLS; i++) {
             double minT = 1e30;
+            if (static_cast<TaskSystemType>(i) != TaskSystemType::PARALLEL_THREAD_POOL_SLEEPING) continue;
             for (int j = 0; j < num_timing_iterations; j++) {
 
                 // Create a new task system

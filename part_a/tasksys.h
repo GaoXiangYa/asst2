@@ -171,7 +171,7 @@ public:
     {
       std::unique_lock<std::mutex> lock(mutex_);
       worker_idx_ = (worker_idx_ + 1) % num_threads_;
-      this->global_task_count_.fetch_add(1);
+      this->global_task_count_.fetch_add(1, std::memory_order_relaxed);
 
       thread_pool_[worker_idx_]->pushTask(std::move([task]{ (*task)(); }));
     }
