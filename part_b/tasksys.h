@@ -2,21 +2,35 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <queue>
+#include <stop_token>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
  * serial task execution engine.  See definition of ITaskSystem in
  * itasksys.h for documentation of the ITaskSystem interface.
  */
-class TaskSystemSerial: public ITaskSystem {
-    public:
-        TaskSystemSerial(int num_threads);
-        ~TaskSystemSerial();
-        const char* name();
-        void run(IRunnable* runnable, int num_total_tasks);
-        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                                const std::vector<TaskID>& deps);
-        void sync();
+class TaskSystemSerial : public ITaskSystem {
+public:
+  TaskSystemSerial(int num_threads);
+  ~TaskSystemSerial();
+  const char *name();
+  void run(IRunnable *runnable, int num_total_tasks);
+  TaskID runAsyncWithDeps(IRunnable *runnable, int num_total_tasks,
+                          const std::vector<TaskID> &deps);
+  void sync();
 };
 
 /*
@@ -25,15 +39,15 @@ class TaskSystemSerial: public ITaskSystem {
  * call.  See definition of ITaskSystem in itasksys.h for documentation
  * of the ITaskSystem interface.
  */
-class TaskSystemParallelSpawn: public ITaskSystem {
-    public:
-        TaskSystemParallelSpawn(int num_threads);
-        ~TaskSystemParallelSpawn();
-        const char* name();
-        void run(IRunnable* runnable, int num_total_tasks);
-        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                                const std::vector<TaskID>& deps);
-        void sync();
+class TaskSystemParallelSpawn : public ITaskSystem {
+public:
+  TaskSystemParallelSpawn(int num_threads);
+  ~TaskSystemParallelSpawn();
+  const char *name();
+  void run(IRunnable *runnable, int num_total_tasks);
+  TaskID runAsyncWithDeps(IRunnable *runnable, int num_total_tasks,
+                          const std::vector<TaskID> &deps);
+  void sync();
 };
 
 /*
@@ -42,15 +56,61 @@ class TaskSystemParallelSpawn: public ITaskSystem {
  * thread pool. See definition of ITaskSystem in itasksys.h for
  * documentation of the ITaskSystem interface.
  */
-class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
-    public:
-        TaskSystemParallelThreadPoolSpinning(int num_threads);
-        ~TaskSystemParallelThreadPoolSpinning();
-        const char* name();
-        void run(IRunnable* runnable, int num_total_tasks);
-        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                                const std::vector<TaskID>& deps);
-        void sync();
+class TaskSystemParallelThreadPoolSpinning : public ITaskSystem {
+public:
+  TaskSystemParallelThreadPoolSpinning(
+      int num_threads = std::thread::hardware_concurrency());
+  ~TaskSystemParallelThreadPoolSpinning();
+  const char *name();
+  void run(IRunnable *runnable, int num_total_tasks);
+  TaskID runAsyncWithDeps(IRunnable *runnable, int num_total_tasks,
+                          const std::vector<TaskID> &deps);
+  void sync();
+
+private:
+  struct TaskGroup {
+    std::atomic<int> remain_tasks; // current task group remain tasks
+    int num_total_tasks;           // current task group total tasks
+    IRunnable *runnable;
+    std::condition_variable completed_cv;
+    std::mutex completed_mutex;
+  };
+
+private:
+  template <typename Func, typename... Args>
+  auto enqueue(Func &&func, Args &&...args)
+      -> std::future<std::invoke_result_t<Func, Args...>> {
+    using ReturnType = std::invoke_result_t<Func, Args...>;
+
+    auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+        [func = std::forward<Func>(func),
+         ... args = std::forward<Args>(args)]() {
+          if constexpr (std::is_void_v<ReturnType>) {
+            std::invoke(std::move(func), std::move(args)...);
+          } else {
+            return std::invoke(std::move(func), std::move(args)...);
+          }
+        });
+
+    std::future<ReturnType> result = task->get_future();
+
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      task_queue_.emplace([task]() { (*task)(); });
+    }
+
+    task_queue_cv_.notify_one();
+    return result;
+  }
+
+  void submitTaskGroupTasks(std::shared_ptr<TaskGroup> &task_group);
+
+private:
+  std::vector<std::thread> thread_pool_;
+  std::queue<std::function<void()>> task_queue_;
+  std::mutex mutex_;
+  std::condition_variable task_queue_cv_;
+  bool stop_{false};
 };
 
 /*
@@ -59,15 +119,118 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * a thread pool. See definition of ITaskSystem in
  * itasksys.h for documentation of the ITaskSystem interface.
  */
-class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
-    public:
-        TaskSystemParallelThreadPoolSleeping(int num_threads);
-        ~TaskSystemParallelThreadPoolSleeping();
-        const char* name();
-        void run(IRunnable* runnable, int num_total_tasks);
-        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                                const std::vector<TaskID>& deps);
-        void sync();
+class ThreadPool;
+class Worker {
+
+  using Task = std::function<void()>;
+
+public:
+  Worker(const int worker_id, ThreadPool *thread_pool)
+      : worker_id_(worker_id), thread_pool_(thread_pool) {}
+
+  void join() { thread_.join(); }
+
+  void run();
+
+  std::optional<Task> tryStealTask();
+
+  void pushTask(Task task);
+
+public:
+  std::deque<Task> task_queue;
+  std::condition_variable_any cv;
+  int worker_id_;
+
+private:
+  std::thread thread_;
+  std::mutex mutex_;
+  ThreadPool *thread_pool_;
+};
+class ThreadPool {
+public:
+  ThreadPool(const int num_threads);
+
+  ~ThreadPool();
+
+  template <typename Func, typename... Args>
+  auto submitTask(Func &&func, Args &&...args)
+      -> std::future<std::invoke_result_t<Func, Args...>> {
+    using ReturnType = std::invoke_result_t<Func, Args...>;
+
+    auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+        [func = std::forward<Func>(func),
+         ... args = std::forward<Args>(args)]() {
+          if constexpr (std::is_void_v<ReturnType>) {
+            std::invoke(std::move(func), std::move(args)...);
+          } else {
+            return std::invoke(std::move(func), std::move(args)...);
+          }
+        });
+
+    std::future<ReturnType> result = task->get_future();
+
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      worker_idx_ = (worker_idx_ + 1) % num_threads_;
+      this->global_task_count_.fetch_add(1, std::memory_order_relaxed);
+
+      thread_pool_[worker_idx_]->pushTask(std::move([task]{ (*task)(); }));
+    }
+
+    return result;
+  }
+
+  Worker *getVictim();
+
+public:
+  std::vector<std::unique_ptr<Worker>> thread_pool_;
+private:
+  int worker_idx_ = 0;
+  int num_threads_;
+  std::mutex mutex_;
+  std::stop_source stop_source_;
+
+public:
+  std::stop_token stop_token_ = stop_source_.get_token();
+  std::atomic<int> global_task_count_;
+};
+
+class TaskSystemParallelThreadPoolSleeping : public ITaskSystem {
+public:
+  TaskSystemParallelThreadPoolSleeping(
+      int num_threads = std::thread::hardware_concurrency());
+  ~TaskSystemParallelThreadPoolSleeping();
+  const char *name();
+  void run(IRunnable *runnable, int num_total_tasks);
+  TaskID runAsyncWithDeps(IRunnable *runnable, int num_total_tasks,
+                          const std::vector<TaskID> &deps);
+  void sync();
+
+
+
+private:
+  struct TaskGroup {
+    std::atomic<int> remain_tasks; // current task group remain tasks
+    int num_total_tasks;           // current task group total tasks
+    TaskID task_id;
+    IRunnable *runnable;
+    std::condition_variable completed_cv;
+    std::mutex completed_mutex;
+    std::unordered_set<TaskID> parent_tasks;
+    std::unordered_set<TaskID> children_tasks;
+  };
+
+private:
+  void submitTaskGroupTasks(std::shared_ptr<TaskGroup> &task_group);
+
+  void executeTaskGroup(std::shared_ptr<TaskGroup>& task_group);
+
+private:
+  ThreadPool thread_pool_;
+  std::mutex mutex_;
+  int num_threads_;
+  TaskID allocate_task_id_{0};
+  std::unordered_map<TaskID, std::shared_ptr<TaskGroup>> task_groups_map;
 };
 
 #endif
